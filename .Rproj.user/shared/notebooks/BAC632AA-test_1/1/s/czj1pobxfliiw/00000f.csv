@@ -1,0 +1,6 @@
+"0","#look at data  (parametric evaluation as first step)"
+"0","crass <- as.data.frame(df_1_log) %>% "
+"0","  select(crassphage, pathogens_add)"
+"0",""
+"0","#simple linear regression (this model assumes a parametric relationship, but histogram shows non-normal distribution)"
+"0","hist(crass$crassphage)"
