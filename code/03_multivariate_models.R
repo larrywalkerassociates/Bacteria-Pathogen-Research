@@ -31,6 +31,7 @@ df_1[df_1 == -88] <- 1.1 #not just 1, bc log10 of 1 is 0
 df_2 <- df_1 %>% 
   dplyr::mutate(pathogens_add = norog1 + norog2 + adv) %>% 
   select(-norog1, -norog2, -adv) %>% 
+  filter(StationCode == c("UPP_ELY_REC")) %>% 
   select(-SampleDate, -StationCode)
 
 #apply log transform, then add binary code
@@ -137,9 +138,9 @@ tail(rf$err.rate)
 #output from machine learning model
 # [500,] 0.4545455 0.2068966 0.9333333
 # 0.4545 (overall)= 45% error (weak model, near random)
-# 0.2069 (class 0)= means the model predicts non-detects fairly well
-# 0.9333 (class 1)= predicts detects VERY poorly
-# model is biased towards non-detects, almost always misses actuald etects, suggests indicators don't predict detection well
+# 0.2069 (class 0)= means the model predicts non-detects fairly well (% error)
+# 0.9333 (class 1)= predicts detects VERY poorly (%error)
+# model is biased towards non-detects, almost always misses actual detects, suggests indicators don't predict detection well
 
 
 # Random forest tests many combinations of variables

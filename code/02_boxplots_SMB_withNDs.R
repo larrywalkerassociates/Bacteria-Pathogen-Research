@@ -1,0 +1,227 @@
+##binary evaluation
+#becky
+
+# include non-detects of indicators 
+
+rm(list = ls())
+
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(rstatix) #library of functions for statistical analysis
+library(coin)
+library(dplyr)
+
+#prep data:---------------------------------------------------------------------------------------------------------------------------
+readRenviron(".Renviron")
+data_path <- Sys.getenv("DATA_PATH")
+
+#2026 data:
+data<-read_csv(file.path(data_path,"RAS analysis","input", "pathogen_data_pt2_RAS.csv"))%>% 
+  dplyr::filter(Replicate != 2) |> 
+  filter(SampleTypeCode == c("Water_Grab")) |> 
+  select(SampleDate, StationCode, ResQualCode, MDL, RL, SampleTypeCode, AnalyteName, Result, 
+         EventType, StationType) 
+
+#include pathogen DNQs as values rather than ND
+data_alt <- data |> 
+  dplyr::mutate(result_new = ifelse((Result == -88 & ResQualCode == "DNQ"), 
+                           MDL/2, Result)) |> 
+  select(-Result) |> 
+  rename(Result = result_new) |> 
+  select(SampleDate, StationCode, SampleTypeCode, AnalyteName, Result, 
+          EventType, StationType)
+write.csv(data_alt, file.path(data_path,"RAS analysis",
+                                          "input", "pathogen_data_pt2_RAS_DNQasMDL.csv"))
+
+# indicators <- c("HF183", "E. coli", "crassphage", "pmmov")
+# pathogens <- c("norog1", "norog2", "adv")
+
+#set pathogen NDs(originally -88) to equal 1
+#also set indicator NDs (originally -88) to equal 1
+
+#add pathogens norog1, norog2 and adv. if ND (-88), convert to 0, if all pathogens are ND, flag as ND
+df_1_pathogens_add<- data_alt |> 
+  pivot_wider(names_from = AnalyteName, values_from = Result) |> 
+  select(-c("c.coli","c.jejuni","c.lari", "16scampy")) |> 
+  dplyr::mutate(norog1_rev = ifelse(norog1 == -88, 0, 
+                                    ifelse(is.na(norog1), NA, norog1)),
+                norog2_rev = ifelse(norog2 == -88, 0, 
+                                    ifelse(is.na(norog2), NA, norog2)),
+                adv_rev = ifelse(adv == -88, 0, 
+                                 ifelse(is.na(adv), NA, adv))) |> 
+  dplyr::mutate(pathogens_add = rowSums(across(norog1_rev:adv_rev), na.rm = TRUE)) |>
+  dplyr::mutate(pathogens_add = ifelse((is.na(norog1_rev) & is.na(norog2_rev) & is.na(adv_rev)), NA, pathogens_add)) |> 
+  select(-norog1_rev,-norog2_rev,-adv_rev) |> 
+  filter(!is.na(pathogens_add)) |> 
+  mutate(path_detection = ifelse(pathogens_add == c("0"), paste(c("ND")), paste(c("Detect or DNQ = 1/2MDL"))))
+write.csv(df_1_pathogens_add, file.path(data_path,"RAS analysis",
+                                        "output", "pathogen_data_wide_clean_DNQadjustment_2026-09-27.csv"))
+
+#exclude all numeric pathogen columns (only keep pathogen Detect non-detect information)
+#pivot long
+df_2_indicators <- df_1_pathogens_add |> 
+  select(-norog1, -norog2, -adv, -pathogens_add) |> 
+  #ask Ryan: there are seven rows with all blank for indicators, but one ND under pathogen (see raw data pivot)- why? removed here
+  select(crassphage, pmmov, Enterococcus, HF183, path_detection, EventType) |> 
+  pivot_longer((!path_detection & !EventType),
+               names_to = "indicator", 
+               values_to = "result") |> 
+  mutate(result = ifelse(result == -88, 1, result)) #make indicator NDs equal to 1, when logged it will be 0
+
+#shorten name for working dataframe, apply log10 to result
+df_log <- df_2_indicators |> 
+  dplyr::mutate(result_log = log10(result))
+
+
+
+
+#### stats: 
+#mann-whitney test (non-parametric and data < 30 samples):
+#mann-whitney: an independent two-samples test (two-sample rank-sum test)
+
+#CRASSPHAGE:---------------------------------------------------------------------------------------------------------------
+crassphage_test <- df_log %>% 
+  filter(indicator == "crassphage") 
+hist(crassphage_test$result_log)
+
+#wilcox
+stat.test <- crassphage_test %>% 
+  rstatix::wilcox_test(result_log ~ path_detection) %>% 
+  add_significance()
+print(stat.test)
+
+#https://www.rdocumentation.org/packages/rstatix/versions/0.7.3/topics/wilcox_effsize
+library(coin)
+# coin::wilcox_test()
+effect_sz <- crassphage_test %>% 
+  wilcox_effsize(result_log ~ path_detection) #result is numeric variable, pathogen_binary is the factor with one or multiple levels giving the corresponding groups
+print(effect_sz)
+#effect size: way to quanitfy the difference between two groups: 
+# https://www.statology.org/effect-size/:
+# while p-value can tell us whether or not there is a statistically sig. difference between two groups, effect size can tell us HOW LARGE this difference actually is
+# in practice, effect sizes are much more interesting and useful to know than p-value
+# #The r value varies from 0 to close to 1. The interpretation values for r commonly in published literature and on the internet are: 0.10 - < 0.3 (small effect), 0.30 - < 0.5 (moderate effect) and >= 0.5 (large effect).
+
+# using alternate wilcox function
+crass_nonp <- wilcox.test(result_log ~path_detection, data= crassphage_test)
+print(crass_nonp)
+
+#### plot:
+crass <- ggplot(crassphage_test, aes(x = path_detection, y = result_log, fill = path_detection))+
+  geom_boxplot()+
+  geom_jitter(aes(color = EventType), shape = 15)+
+  scale_color_manual(values = c("black", "grey"))+
+  labs(title = get_test_label(stat.test, detailed = TRUE),
+       subtitle = paste("effect size: ", effect_sz$magnitude, "(r = 0.335)"),
+       x = "Pathogen Detection",
+       y = "log(crassphage conc.)")+
+  theme_classic()
+crass
+ggsave(file.path(data_path,"RAS analysis","output", "boxplots", "DNQ as 1.2MDL", "crassphage_two-sample_test.png"), plot = crass, bg = "white", scale = 1, width = 6, height = 3)
+
+
+#HF183:---------------------------------------------------------------------------------------------------------------
+HF183_test <- df_log %>% 
+  filter(indicator == "HF183")
+
+#wilcox
+stat.test <- HF183_test %>% 
+  rstatix::wilcox_test(result_log ~ path_detection) %>% 
+  add_significance()
+print(stat.test)
+
+#check, another function
+stat2 <- wilcox.test(result_log ~ path_detection, data= HF183_test)
+print(stat2)
+
+#effect size
+library(coin)
+# coin::wilcox_test()
+effect_sz <- HF183_test %>% 
+  wilcox_effsize(result_log ~ path_detection) 
+print(effect_sz)
+
+#### plot:
+hf183 <- ggplot(HF183_test, aes(x = path_detection, y = result_log, fill = path_detection))+
+  geom_boxplot()+
+  geom_jitter(aes(color = EventType), shape = 15)+
+  scale_color_manual(values = c("black", "grey"))+
+  labs(title = get_test_label(stat.test, detailed = TRUE),
+       subtitle = paste("effect size: ", effect_sz$magnitude, "(r = 0.337)"),
+       x = "Pathogen Detection",
+       y = "log(HF183 conc.)")+
+  theme_classic()
+hf183
+ggsave(file.path(data_path,"RAS analysis","output", "boxplots", "DNQ as 1.2MDL","HF183_two-sample_test.png"), plot = hf183, bg = "white", scale = 1, width = 6, height = 3)
+
+#pmmov:---------------------------------------------------------------------------------------------------------------
+pmmov_test <- df_log %>% 
+  filter(indicator == "pmmov") 
+hist(pmmov_test$result_log)
+
+#wilcox
+stat.test <- pmmov_test %>% 
+  rstatix::wilcox_test(result_log ~ path_detection) %>% 
+  add_significance()
+print(stat.test)
+
+library(coin)
+# coin::wilcox_test()
+effect_sz <- pmmov_test %>% 
+  wilcox_effsize(result_log ~ path_detection) #result is numeric variable, pathogen_binary is the factor with one or multiple levels giving the corresponding groups
+print(effect_sz)
+
+# using alternate wilcox function
+pmmov_nonp <- wilcox.test(result_log ~path_detection, data= pmmov_test)
+print(pmmov_nonp)
+
+#### plot:
+pmmov <- ggplot(pmmov_test, aes(x = path_detection, y = result_log, fill = path_detection))+
+  geom_boxplot()+
+  geom_jitter(aes(color = EventType), shape = 15)+
+  scale_color_manual(values = c("black", "grey"))+
+  labs(title = get_test_label(stat.test, detailed = TRUE),
+       subtitle = paste("effect size: ", effect_sz$magnitude, "(r = 0.367)"),
+       x = "Pathogen Detection",
+       y = "log(pmmov conc.)")+
+  theme_classic()
+  #theme(legend.position="none")
+pmmov
+ggsave(file.path(data_path,"RAS analysis", "output", "boxplots", "DNQ as 1.2MDL", "pmmov_two-sample_test.png"), plot = pmmov, bg = "white", scale = 1, width = 6, height = 3)
+
+#Enterococcus:---------------------------------------------------------------------------------------------------------------
+Entero_test <- df_log %>% 
+  filter(indicator == "Enterococcus") 
+hist(Entero_test$result_log)
+
+#wilcox
+stat.test <- Entero_test %>% 
+  rstatix::wilcox_test(result_log ~ path_detection) %>% 
+  add_significance()
+print(stat.test)
+
+library(coin)
+# coin::wilcox_test()
+effect_sz <- Entero_test %>% 
+  wilcox_effsize(result_log ~ path_detection) #result is numeric variable, pathogen_binary is the factor with one or multiple levels giving the corresponding groups
+print(effect_sz)
+
+# using alternate wilcox function
+Entero_nonp <- wilcox.test(result_log ~path_detection, data= Entero_test)
+print(Entero_nonp)
+
+#### plot:
+Entero <- ggplot(Entero_test, aes(x = path_detection, y = result_log, fill = path_detection))+
+  geom_boxplot()+
+  geom_jitter(aes(color = EventType), shape = 15)+
+  scale_color_manual(values = c("black", "grey"))+
+  labs(title = get_test_label(stat.test, detailed = TRUE),
+       subtitle = paste("effect size: ", effect_sz$magnitude, "(r = 0.337)"),
+       x = "Pathogen Detection",
+       y = "log(Enterococcus conc.)")+
+  theme_classic()
+  #theme(legend.position="none")
+Entero
+ggsave(file.path(data_path,"RAS analysis","output", "boxplots","DNQ as 1.2MDL", "Entero_two-sample_test.png"), plot = Entero, bg = "white", scale = 1, width = 6, height = 3)
+
